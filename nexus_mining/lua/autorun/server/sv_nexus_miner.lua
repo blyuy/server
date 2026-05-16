@@ -25,10 +25,11 @@ local function cfg(group, key, fallback)
     return v
 end
 
+-- Жесткая проверка: только наша энтити, а не обычный проп по модели.
 local function isOre(ent)
     if not IsValid(ent) then return false end
-    local model = string.lower(ent:GetModel() or "")
-    return model == string.lower(NEXUS_MINER_CONFIG.OreModel or "models/props_junk/rock001a.mdl")
+    if ent:GetClass() == "nexus_miner_ore" then return true end
+    return ent:GetNWBool("NexusMinerOre", false)
 end
 
 local function distOk(ply, ent)
@@ -176,10 +177,11 @@ hook.Add("KeyPress", "NexusMinerUseRock", function(ply, key)
     if sessions[ply] then return end
 
     local tr = ply:GetEyeTrace()
-    if not tr or not IsValid(tr.Entity) then return end
+    if not tr or not tr.Hit or not IsValid(tr.Entity) then return end
     local ent = tr.Entity
 
-    if not isOre(ent) then return end
+    -- Только class nexus_miner_ore. Пропы игнорируем.
+    if ent:GetClass() ~= "nexus_miner_ore" then return end
     if not distOk(ply, ent) then return end
 
     startSession(ply, ent)
@@ -215,7 +217,6 @@ net.Receive("nexus_miner_input", function(_, ply)
     s.awaiting = false
 
     if s.step >= s.total then
-        -- Серверная проверка дистанции перед выдачей награды.
         if not distOk(ply, s.ore) then
             finishSession(ply, false, "Вы отошли от руды.")
             return
@@ -272,38 +273,14 @@ hook.Add("Think", "NexusMinerTimeoutThink", function()
     end
 end)
 
-hook.Add("PlayerDisconnected", "NexusMinerCleanupDisconnect", function(ply)
+hook.Add("PlayerDisconnected", "NexusMinerDisconnectCleanup", function(ply)
     if sessions[ply] then
         finishSession(ply, false, "Добыча прервана.")
     end
 end)
 
-hook.Add("PlayerDeath", "NexusMinerCleanupDeath", function(ply)
+hook.Add("PlayerDeath", "NexusMinerDeathCleanup", function(ply)
     if sessions[ply] then
         finishSession(ply, false, "Добыча прервана.")
-    end
-end)
-
-concommand.Add("nexus_miner_spawn_ore", function(ply)
-    if IsValid(ply) and not ply:IsSuperAdmin() then return end
-
-    local ore = ents.Create("prop_physics")
-    if not IsValid(ore) then return end
-
-    ore:SetModel(NEXUS_MINER_CONFIG.OreModel or "models/props_junk/rock001a.mdl")
-
-    if IsValid(ply) then
-        local tr = ply:GetEyeTrace()
-        ore:SetPos(tr.HitPos + Vector(0, 0, 8))
-    else
-        ore:SetPos(Vector(0, 0, 0))
-    end
-
-    ore:Spawn()
-
-    local phys = ore:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:EnableMotion(false)
-        phys:Sleep()
     end
 end)

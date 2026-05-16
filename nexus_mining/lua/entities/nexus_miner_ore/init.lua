@@ -11,6 +11,7 @@ function ENT:Initialize()
 
     self:SetDepleted(false)
     self:SetRegenAt(0)
+    self:SetNWBool("NexusMinerOre", true)
 
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
