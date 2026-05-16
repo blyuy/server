@@ -73,21 +73,19 @@ NEXUS_INV_CONFIG.Items = {
     }
 }
 
--- Локальные предметы выдаются автоматически и не удаляются из инвентаря.
 NEXUS_INV_CONFIG.LocalItems = {
     { id = "id_card", amount = 1 },
     { id = "city_radio", amount = 1 }
 }
 
--- Только эти энтити можно подбирать в инвентарь через Shift+E.
 NEXUS_INV_CONFIG.PickupEntities = {
     ["sent_hop_bag"] = { id = "medkit", amount = 1, removeOnPickup = true },
     ["item_battery"] = { id = "scrap", amount = 2, removeOnPickup = true },
     ["nexus_inv_worlditem"] = { worldItem = true }
 }
 
--- Ассортимент NPC-торговцев.
 NEXUS_INV_CONFIG.Vendor = {
+    name = "Торговец",
     model = "models/Humans/Group01/Male_07.mdl",
     useDistance = 140,
     stock = {
@@ -95,5 +93,40 @@ NEXUS_INV_CONFIG.Vendor = {
         { id = "medkit", buyPrice = 350, sellPrice = 180 },
         { id = "lockpick_kit", buyPrice = 600, sellPrice = 260 },
         { id = "evidence_bag", buyPrice = 0, sellPrice = 500 }
+    }
+}
+
+NEXUS_INV_CONFIG.VendorProfiles = NEXUS_INV_CONFIG.VendorProfiles or {
+    default = {
+        name = "Базовый торговец",
+        model = "models/Humans/Group01/Male_07.mdl",
+        useDistance = 140,
+        stock = {
+            { id = "scrap", buyPrice = 45, sellPrice = 20 },
+            { id = "medkit", buyPrice = 350, sellPrice = 180 },
+            { id = "lockpick_kit", buyPrice = 600, sellPrice = 260 },
+            { id = "evidence_bag", buyPrice = 0, sellPrice = 500 }
+        }
+    }
+}
+
+NEXUS_INV_CONFIG.CustomItems = NEXUS_INV_CONFIG.CustomItems or {}
+
+NEXUS_INV_CONFIG.LootBins = NEXUS_INV_CONFIG.LootBins or {
+    refreshSeconds = 600,
+    openDistance = 120,
+    defaultModel = "models/props_junk/trashdumpster02.mdl",
+    profiles = {
+        trash_default = {
+            name = "Обычная мусорка",
+            model = "models/props_junk/trashdumpster02.mdl",
+            rollsMin = 2,
+            rollsMax = 5,
+            pool = {
+                { id = "scrap", min = 1, max = 5, weight = 70, chance = 90 },
+                { id = "medkit", min = 1, max = 1, weight = 20, chance = 35 },
+                { id = "lockpick_kit", min = 1, max = 1, weight = 10, chance = 20 }
+            }
+        }
     }
 }

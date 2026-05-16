@@ -34,31 +34,107 @@ surface.CreateFont("NexusInvSmall", {
     antialias = true
 })
 
+local function buildVendorProfilesFromConfig()
+    if istable(NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.VendorProfiles) and next(NEXUS_INV_CONFIG.VendorProfiles) then
+        return NEXUS_INV_CONFIG.VendorProfiles
+    end
+
+    local legacy = NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.Vendor
+    if istable(legacy) then
+        return {
+            default = {
+                name = legacy.name or "Торговец",
+                model = legacy.model or "models/Humans/Group01/Male_07.mdl",
+                useDistance = tonumber(legacy.useDistance) or 140,
+                stock = istable(legacy.stock) and legacy.stock or {}
+            }
+        }
+    end
+
+    return {}
+end
+
+local function getVendorProfileById(profileId)
+    local all = buildVendorProfilesFromConfig()
+    if not istable(all) or not next(all) then return nil end
+
+    if isstring(profileId) and profileId ~= "" and istable(all[profileId]) then
+        return all[profileId]
+    end
+
+    if istable(all.default) then
+        return all.default
+    end
+
+    for _, prof in pairs(all) do
+        if istable(prof) then return prof end
+    end
+
+    return nil
+end
+
 local function itemDef(itemId)
     local static = NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.Items and NEXUS_INV_CONFIG.Items[itemId] or nil
     if static then return static end
 
-    if string.sub(itemId or "", 1, 8) ~= "weapon::" then
-        return nil
+    local custom = (_G.NEXUS_INV_RUNTIME_CUSTOM_ITEMS or {})[itemId]
+    if istable(custom) then return custom end
+
+    local cfgCustom = NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.CustomItems and NEXUS_INV_CONFIG.CustomItems[itemId] or nil
+    if istable(cfgCustom) then return cfgCustom end
+
+    if string.sub(itemId or "", 1, 8) == "weapon::" then
+        local class = string.sub(itemId, 9)
+        local stored = weapons.GetStored(class)
+        local name = (stored and stored.PrintName and stored.PrintName ~= "") and stored.PrintName or class
+        local model = (stored and stored.WorldModel and stored.WorldModel ~= "") and stored.WorldModel or "models/weapons/w_pistol.mdl"
+
+        return {
+            name = name,
+            model = model,
+            description = "Складированное оружие. Используйте для выдачи.",
+            maxStack = 1,
+            canDrop = true,
+            canSell = false,
+            useType = "equip_weapon"
+        }
     end
 
-    local class = string.sub(itemId, 9)
-    local stored = weapons.GetStored(class)
-    local name = (stored and stored.PrintName and stored.PrintName ~= "") and stored.PrintName or class
-    local model = (stored and stored.WorldModel and stored.WorldModel ~= "") and stored.WorldModel or "models/weapons/w_pistol.mdl"
+    if string.sub(itemId or "", 1, 10) == "shipment::" then
+        local class = string.sub(itemId, 11)
+        return {
+            name = "Ящик: " .. class,
+            model = "models/items/ammocrate_smg1.mdl",
+            description = "Складированный ящик оружия.",
+            maxStack = 20,
+            canDrop = true,
+            canSell = false
+        }
+    end
+
+    if string.sub(itemId or "", 1, 8) == "entity::" then
+        local class = string.sub(itemId, 9)
+        return {
+            name = "Энтити: " .. class,
+            model = "models/props_lab/box01a.mdl",
+            description = "Складированная энтити.",
+            maxStack = 20,
+            canDrop = true,
+            canSell = false
+        }
+    end
 
     return {
-        name = name,
-        model = model,
-        description = "Складированное оружие. Используйте для выдачи.",
-        maxStack = 1,
+        name = itemId,
+        model = "models/props_junk/cardboard_box003a.mdl",
+        description = "Пользовательский предмет.",
+        maxStack = 9999,
         canDrop = true,
-        canSell = false,
-        useType = "equip_weapon"
+        canSell = true
     }
 end
 
-local function isLocalItem(itemId)
+local function isBaseLocalItem(itemId)
     for _, localItem in ipairs(NEXUS_INV_CONFIG.LocalItems or {}) do
         if localItem.id == itemId then return true end
     end
@@ -69,6 +145,13 @@ local function sendAction(action, itemId, amount)
     net.Start("nexus_inv_action")
     net.WriteString(action)
     net.WriteString(itemId)
+    net.WriteUInt(math.max(1, amount or 1), 16)
+    net.SendToServer()
+end
+
+local function sendDeleteAction(itemId, amount)
+    net.Start("nexus_inv_delete")
+    net.WriteString(itemId or "")
     net.WriteUInt(math.max(1, amount or 1), 16)
     net.SendToServer()
 end
@@ -89,41 +172,21 @@ end
 
 local function currentVendorProfile()
     if not IsValid(vendorEntity) then return nil end
-    local id = vendorEntity.GetProfileId and vendorEntity:GetProfileId() or ""
-    if id == "" then return nil end
 
-    return NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.VendorProfiles and NEXUS_INV_CONFIG.VendorProfiles[id] or nil
-end
-
-local function createItemCard(parent, itemId, amount, onClick)
-    local def = itemDef(itemId)
-    if not def then return end
-
-    local btn = vgui.Create("DButton", parent)
-    btn:SetSize(120, 120)
-    btn:SetText("")
-    btn.hover = 0
-    btn.DoClick = onClick
-
-    local model = vgui.Create("DModelPanel", btn)
-    model:Dock(FILL)
-    model:DockMargin(6, 6, 6, 28)
-    model:SetModel(def.model or "models/props_junk/cardboard_box003a.mdl")
-    model:SetFOV(30)
-    model.LayoutEntity = function() end
-
-    btn.Paint = function(self, w, h)
-        self.hover = Lerp(FrameTime() * 12, self.hover, self:IsHovered() and 1 or 0)
-        local r = Lerp(self.hover, 24, 38)
-        local g = Lerp(self.hover, 27, 48)
-        local b = Lerp(self.hover, 38, 68)
-
-        draw.RoundedBox(8, 0, 0, w, h, Color(r, g, b, 238))
-        draw.SimpleText(def.name or itemId, "NexusInvSmall", 6, h - 18, color_white, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-        draw.SimpleText("x" .. amount, "NexusInvSmall", w - 6, h - 18, Color(210, 220, 240), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+    local stockJson = vendorEntity:GetNWString("NexusVendorStock", "")
+    if stockJson ~= "" then
+        local parsedStock = util.JSONToTable(stockJson or "")
+        if istable(parsedStock) then
+            return {
+                name = vendorEntity.GetVendorName and vendorEntity:GetVendorName() or "Торговец",
+                useDistance = vendorEntity:GetNWInt("NexusVendorUseDistance", 140),
+                stock = parsedStock
+            }
+        end
     end
 
-    return btn
+    local id = vendorEntity.GetProfileId and vendorEntity:GetProfileId() or ""
+    return getVendorProfileById(id)
 end
 
 local function rebuildInventoryTab(panel)
@@ -155,12 +218,24 @@ local function rebuildInventoryTab(panel)
 
     local infoLabel = vgui.Create("DLabel", right)
     infoLabel:Dock(FILL)
-    infoLabel:DockMargin(12, 6, 12, 60)
+    infoLabel:DockMargin(12, 6, 12, 96)
     infoLabel:SetFont("NexusInvSmall")
     infoLabel:SetTextColor(Color(220, 228, 245))
     infoLabel:SetWrap(true)
     infoLabel:SetAutoStretchVertical(true)
     infoLabel:SetText("Инвентарь пуст.\n\nПодбор: Shift + E\nОружие и коробки из F4 поддерживаются.")
+
+    local deleteBtn = vgui.Create("DButton", right)
+    deleteBtn:Dock(BOTTOM)
+    deleteBtn:DockMargin(12, 0, 12, 8)
+    deleteBtn:SetTall(24)
+    deleteBtn:SetText("Удалить")
+    deleteBtn:SetFont("NexusInvSmall")
+    deleteBtn:SetTextColor(color_white)
+    deleteBtn.Paint = function(self, w, h)
+        draw.RoundedBox(6, 0, 0, w, h, Color(168, 78, 78, self:IsHovered() and 245 or 220))
+    end
+    deleteBtn:SetEnabled(false)
 
     local dropBtn = vgui.Create("DButton", right)
     dropBtn:Dock(BOTTOM)
@@ -202,11 +277,12 @@ local function rebuildInventoryTab(panel)
             .. "Количество: " .. amount .. "\n"
             .. "Макс. стак: " .. (def.maxStack or 1) .. "\n"
             .. "Продажа: " .. tostring(def.sellPrice or 0) .. "\n"
-            .. "Локальный: " .. (isLocalItem(itemId) and "Да" or "Нет")
+            .. "Локальный (базовый): " .. (isBaseLocalItem(itemId) and "Да" or "Нет")
         )
 
         useBtn:SetEnabled(def.useType ~= nil)
-        dropBtn:SetEnabled(def.canDrop ~= false and not isLocalItem(itemId))
+        dropBtn:SetEnabled(def.canDrop ~= false and not isBaseLocalItem(itemId))
+        deleteBtn:SetEnabled(not isBaseLocalItem(itemId))
     end
 
     local hasAny = false
@@ -261,6 +337,11 @@ local function rebuildInventoryTab(panel)
         if not selectedId then return end
         sendAction("drop", selectedId, 1)
     end
+
+    deleteBtn.DoClick = function()
+        if not selectedId then return end
+        sendDeleteAction(selectedId, 1)
+    end
 end
 
 local function rebuildVendorTab(panel)
@@ -291,7 +372,19 @@ local function rebuildVendorTab(panel)
     sellList:DockMargin(8, 34, 8, 8)
 
     local profile = currentVendorProfile()
-    for _, entry in ipairs((profile and profile.stock) or {}) do
+    local stock = (profile and profile.stock) or {}
+
+    if not istable(stock) or #stock <= 0 then
+        local emptyLabel = vgui.Create("DLabel", left)
+        emptyLabel:SetPos(12, 42)
+        emptyLabel:SetSize(left:GetWide() - 24, 24)
+        emptyLabel:SetText("У этого торговца нет товаров. Настройте stock в админке.")
+        emptyLabel:SetFont("NexusInvSmall")
+        emptyLabel:SetTextColor(Color(180, 190, 210))
+        return
+    end
+
+    for _, entry in ipairs(stock) do
         local def = itemDef(entry.id)
         if not def then continue end
 

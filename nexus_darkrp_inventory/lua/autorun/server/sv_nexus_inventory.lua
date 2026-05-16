@@ -23,7 +23,8 @@ local sendSync
 local runtimePath = "nexus_inv/runtime.json"
 local runtime = {
     localItems = nil,
-    vendorProfiles = nil
+    vendorProfiles = nil,
+    customItems = nil
 }
 
 local function cfg(group, key, fallback)
@@ -47,6 +48,7 @@ local function loadRuntime()
 
     runtime.localItems = istable(parsed.localItems) and parsed.localItems or nil
     runtime.vendorProfiles = istable(parsed.vendorProfiles) and parsed.vendorProfiles or nil
+    runtime.customItems = istable(parsed.customItems) and parsed.customItems or nil
 end
 
 local function saveRuntime()
@@ -62,9 +64,129 @@ local function localItemsTable()
     return NEXUS_INV_CONFIG.LocalItems or {}
 end
 
+local function buildDefaultVendorProfiles()
+    if istable(NEXUS_INV_CONFIG.VendorProfiles) and next(NEXUS_INV_CONFIG.VendorProfiles) then
+        return table.Copy(NEXUS_INV_CONFIG.VendorProfiles)
+    end
+
+    local legacy = NEXUS_INV_CONFIG.Vendor
+    if istable(legacy) then
+        return {
+            default = {
+                name = legacy.name or "Торговец",
+                model = legacy.model or "models/Humans/Group01/Male_07.mdl",
+                useDistance = tonumber(legacy.useDistance) or 140,
+                stock = istable(legacy.stock) and table.Copy(legacy.stock) or {}
+            }
+        }
+    end
+
+    return {}
+end
+
 local function vendorProfilesTable()
-    if istable(runtime.vendorProfiles) then return runtime.vendorProfiles end
-    return NEXUS_INV_CONFIG.VendorProfiles or {}
+    local defaults = buildDefaultVendorProfiles()
+
+    if not istable(runtime.vendorProfiles) or not next(runtime.vendorProfiles) then
+        runtime.vendorProfiles = table.Copy(defaults)
+        saveRuntime()
+        return runtime.vendorProfiles
+    end
+
+    for id, profile in pairs(defaults) do
+        if not istable(runtime.vendorProfiles[id]) then
+            runtime.vendorProfiles[id] = table.Copy(profile)
+        end
+    end
+
+    return runtime.vendorProfiles
+end
+
+local function customItemsTable()
+    if not istable(runtime.customItems) then
+        runtime.customItems = {}
+        return runtime.customItems
+    end
+
+    local repaired = {}
+    local changed = false
+
+    for k, v in pairs(runtime.customItems) do
+        if isstring(k) then
+            repaired[k] = v
+        elseif istable(v) and isstring(v.id) and v.id ~= "" then
+            repaired[v.id] = v
+            changed = true
+        else
+            changed = true
+        end
+    end
+
+    if changed then
+        runtime.customItems = repaired
+        saveRuntime()
+    end
+
+    return runtime.customItems
+end
+
+local function sanitizeItemId(id)
+    id = string.Trim(string.lower(tostring(id or "")))
+    if id == "" then return nil end
+    if not string.match(id, "^[a-z0-9_]+$") then return nil end
+    return id
+end
+
+local function sanitizeCustomItem(raw)
+    if not istable(raw) then return nil end
+
+    local out = {}
+    out.name = string.Trim(tostring(raw.name or ""))
+    out.model = string.Trim(tostring(raw.model or ""))
+    out.description = string.Trim(tostring(raw.description or ""))
+    out.maxStack = math.Clamp(math.floor(tonumber(raw.maxStack) or 1), 1, 9999)
+    out.canDrop = tobool(raw.canDrop)
+    out.canSell = tobool(raw.canSell)
+    out.buyPrice = math.max(0, math.floor(tonumber(raw.buyPrice) or 0))
+    out.sellPrice = math.max(0, math.floor(tonumber(raw.sellPrice) or 0))
+
+    local useType = string.Trim(tostring(raw.useType or ""))
+    out.useType = useType ~= "" and useType or nil
+    out.healAmount = math.max(0, math.floor(tonumber(raw.healAmount) or 0))
+
+    if out.name == "" then return nil end
+    if out.model == "" or not util.IsValidModel(out.model) then
+        out.model = "models/props_junk/cardboard_box003a.mdl"
+    end
+
+    return out
+end
+
+local function collectAllItemIds()
+    local ids, seen = {}, {}
+
+    local function pushId(rawId)
+        local id = tostring(rawId or "")
+        id = string.Trim(id)
+        if id == "" then return end
+        if seen[id] then return end
+        seen[id] = true
+        ids[#ids + 1] = id
+    end
+
+    for itemId, _ in pairs(NEXUS_INV_CONFIG.Items or {}) do
+        pushId(itemId)
+    end
+
+    for itemId, _ in pairs(customItemsTable()) do
+        pushId(itemId)
+    end
+
+    table.sort(ids, function(a, b)
+        return string.lower(a) < string.lower(b)
+    end)
+
+    return ids
 end
 
 loadRuntime()
@@ -73,8 +195,10 @@ local function itemDef(itemId)
     local static = NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.Items and NEXUS_INV_CONFIG.Items[itemId] or nil
     if static then return static end
 
+    local custom = customItemsTable()[itemId]
+    if istable(custom) then return custom end
+
     if string.sub(itemId or "", 1, 8) ~= "weapon::" then
-        -- Dynamic shipment item
         if string.sub(itemId or "", 1, 10) == "shipment::" then
             local class = string.sub(itemId, 11)
             local title = class
@@ -98,7 +222,6 @@ local function itemDef(itemId)
             }
         end
 
-        -- Dynamic spawned DarkRP entity item
         if string.sub(itemId or "", 1, 8) == "entity::" then
             local class = string.sub(itemId, 9)
             return {
@@ -346,7 +469,17 @@ local function tryPickupEntity(ply, ent)
         return true
     end
 
-    -- Intentionally ignore spawned_entity auto-pickup by default.
+    if not rule and isPickupSpawnedEntity(ent) then
+        local class = normalizedSpawnedEntityClass(ent)
+        if not class then return false end
+
+        local ok = addItem(ply, entityItemId(class), 1)
+        if not ok then return false end
+
+        ent:Remove()
+        sendSync(ply)
+        return true
+    end
 
     if not rule then return false end
 
@@ -390,7 +523,6 @@ local function tryPickupFromTrace(ply)
         end
     end
 
-    -- Extra fallback: find closest pickup candidate in front of the player.
     local origin = ply:GetShootPos()
     local aim = ply:GetAimVector()
     local probe = origin + aim * 80
@@ -420,10 +552,20 @@ end
 
 local function getVendorProfile(profileId)
     local all = vendorProfilesTable()
-    if all[profileId] then return all[profileId], profileId end
+    if not istable(all) or not next(all) then return nil, nil end
 
-    for id, _ in pairs(all) do
-        return all[id], id
+    if isstring(profileId) and profileId ~= "" and istable(all[profileId]) then
+        return all[profileId], profileId
+    end
+
+    if istable(all.default) then
+        return all.default, "default"
+    end
+
+    for id, profile in pairs(all) do
+        if istable(profile) then
+            return profile, id
+        end
     end
 
     return nil, nil
@@ -674,10 +816,8 @@ hook.Add("KeyPress", "NexusInvShiftUsePickup", function(ply, key)
     if not cfg("Settings", "shiftPickupEnabled", true) then return end
     if not ply:KeyDown(IN_SPEED) then return end
 
-    -- Run on next tick so eye trace reflects current use press reliably.
     timer.Simple(0, function()
         if not IsValid(ply) then return end
-
         tryPickupFromTrace(ply)
     end)
 end)
@@ -712,15 +852,30 @@ NEXUS_INV.OpenVendor = openVendor
 
 local function adminPayload()
     return {
-        localItems = localItemsTable(),
-        vendorProfiles = vendorProfilesTable(),
-        itemIds = table.GetKeys(NEXUS_INV_CONFIG.Items or {})
+        localItems = localItemsTable() or {},
+        vendorProfiles = vendorProfilesTable() or {},
+        customItems = customItemsTable() or {},
+        itemIds = collectAllItemIds()
     }
 end
 
 local function sendAdminSync(ply)
+    if not IsValid(ply) then return end
+
+    local ok, data = pcall(adminPayload)
+    if not ok or not istable(data) then
+        data = {
+            localItems = {},
+            vendorProfiles = {},
+            customItems = {},
+            itemIds = {}
+        }
+    end
+
+    local json = util.TableToJSON(data, false) or "{}"
+
     net.Start("nexus_inv_admin_sync")
-    net.WriteString(util.TableToJSON(adminPayload(), false) or "{}")
+    net.WriteString(json)
     net.Send(ply)
 end
 
@@ -755,7 +910,8 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
     local data = util.JSONToTable(net.ReadString() or "") or {}
 
     runtime.localItems = runtime.localItems or table.Copy(NEXUS_INV_CONFIG.LocalItems or {})
-    runtime.vendorProfiles = runtime.vendorProfiles or table.Copy(NEXUS_INV_CONFIG.VendorProfiles or {})
+    runtime.vendorProfiles = runtime.vendorProfiles or table.Copy(buildDefaultVendorProfiles())
+    runtime.customItems = runtime.customItems or {}
 
     if action == "local_add" then
         local itemId = tostring(data.itemId or "")
@@ -773,6 +929,7 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
                 runtime.localItems[#runtime.localItems + 1] = { id = itemId, amount = amount }
             end
         end
+
     elseif action == "local_remove" then
         local itemId = tostring(data.itemId or "")
         for i = #runtime.localItems, 1, -1 do
@@ -780,6 +937,7 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
                 table.remove(runtime.localItems, i)
             end
         end
+
     elseif action == "vendor_upsert" then
         local id = tostring(data.profileId or "")
         if isValidProfileId(id) then
@@ -792,12 +950,14 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
             local profile = runtime.vendorProfiles[id]
             profile.name = tostring(data.name or profile.name or "Торговец")
             profile.model = tostring(data.model or profile.model or "models/Humans/Group01/Male_07.mdl")
-            profile.useDistance = math.max(40, math.floor(tonumber(data.useDistance) or profile.useDistance or cfg("VendorDefaults", "useDistance", 140)))
+            profile.useDistance = math.max(40, math.floor(tonumber(data.useDistance) or profile.useDistance or 140))
             profile.stock = profile.stock or {}
         end
+
     elseif action == "vendor_remove" then
         local id = tostring(data.profileId or "")
         runtime.vendorProfiles[id] = nil
+
     elseif action == "vendor_stock_upsert" then
         local id = tostring(data.profileId or "")
         local profile = runtime.vendorProfiles[id]
@@ -820,6 +980,7 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
                 profile.stock[#profile.stock + 1] = { id = itemId, buyPrice = buy, sellPrice = sell }
             end
         end
+
     elseif action == "vendor_stock_remove" then
         local id = tostring(data.profileId or "")
         local profile = runtime.vendorProfiles[id]
@@ -831,6 +992,7 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
                 end
             end
         end
+
     elseif action == "vendor_spawn" then
         local id = tostring(data.profileId or "")
         local profile, resolvedId = getVendorProfile(id)
@@ -843,6 +1005,19 @@ net.Receive("nexus_inv_admin_action", function(_, ply)
                 ent:SetPos(tr.HitPos + Vector(0, 0, 8))
                 ent:Spawn()
             end
+        end
+
+    elseif action == "item_upsert" then
+        local itemId = sanitizeItemId(data.itemId)
+        local item = sanitizeCustomItem(data.item or {})
+        if itemId and item then
+            runtime.customItems[itemId] = item
+        end
+
+    elseif action == "item_remove" then
+        local itemId = sanitizeItemId(data.itemId)
+        if itemId then
+            runtime.customItems[itemId] = nil
         end
     end
 
@@ -858,10 +1033,10 @@ net.Receive("nexus_inv_vendor_action", function(_, ply)
     local vendorEnt = net.ReadEntity()
 
     if not IsValid(vendorEnt) or vendorEnt:GetClass() ~= "nexus_inv_vendor" then return end
-    local profile = getVendorProfile(vendorEnt:GetProfileId())
+    local profile = select(1, getVendorProfile(vendorEnt:GetProfileId()))
     if not profile then return end
 
-    local useDistance = tonumber(profile.useDistance) or cfg("VendorDefaults", "useDistance", 140)
+    local useDistance = tonumber(profile.useDistance) or 140
     if ply:GetPos():Distance(vendorEnt:GetPos()) > useDistance then return end
 
     local stock = vendorStockById(profile, itemId)
@@ -924,7 +1099,6 @@ concommand.Add("nexus_inv_spawn_vendor", function(ply, _, args)
     if IsValid(ply) and not ply:IsSuperAdmin() then return end
 
     local profileId = tostring((args and args[1]) or "")
-
     local profile, resolvedId = getVendorProfile(profileId)
     if not profile then return end
 

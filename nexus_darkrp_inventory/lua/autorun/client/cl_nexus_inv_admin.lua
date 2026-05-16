@@ -18,6 +18,7 @@ local adminFrame
 local payload = {
     localItems = {},
     vendorProfiles = {},
+    customItems = {},
     itemIds = {}
 }
 
@@ -40,36 +41,54 @@ local function makeButton(parent, text, onClick)
     return btn
 end
 
+local function baseLocalIds()
+    local out = {}
+    for _, row in ipairs((NEXUS_INV_CONFIG and NEXUS_INV_CONFIG.LocalItems) or {}) do
+        if isstring(row.id) and row.id ~= "" then
+            out[#out + 1] = row.id
+        end
+    end
+    table.sort(out, function(a, b) return a < b end)
+    return out
+end
+
 local function rebuildLocalItemsTab(panel)
     panel:Clear()
 
+    local info = vgui.Create("DLabel", panel)
+    info:SetPos(10, 10)
+    info:SetSize(panel:GetWide() - 20, 22)
+    info:SetText("Здесь редактируются только базовые локальные предметы (они защищены от удаления в инвентаре).")
+    info:SetFont("NexusInvAdminText")
+    info:SetTextColor(Color(205, 214, 235))
+
     local itemBox = vgui.Create("DComboBox", panel)
-    itemBox:SetPos(10, 10)
+    itemBox:SetPos(10, 40)
     itemBox:SetSize(260, 28)
-    itemBox:SetValue("Выберите предмет")
-    for _, itemId in ipairs(payload.itemIds or {}) do
+    itemBox:SetValue("Выберите базовый локальный предмет")
+    for _, itemId in ipairs(baseLocalIds()) do
         itemBox:AddChoice(itemId)
     end
 
     local amount = vgui.Create("DTextEntry", panel)
-    amount:SetPos(276, 10)
+    amount:SetPos(276, 40)
     amount:SetSize(80, 28)
     amount:SetValue("1")
 
-    local addBtn = makeButton(panel, "Добавить/обновить", function()
+    local addBtn = makeButton(panel, "Обновить amount", function()
         local itemId = itemBox:GetValue()
-        if not itemId or itemId == "" or itemId == "Выберите предмет" then return end
+        if not itemId or itemId == "" or itemId == "Выберите базовый локальный предмет" then return end
         sendAction("local_add", {
             itemId = itemId,
             amount = tonumber(amount:GetValue()) or 1
         })
     end)
-    addBtn:SetPos(362, 10)
+    addBtn:SetPos(362, 40)
     addBtn:SetSize(170, 28)
 
     local list = vgui.Create("DListView", panel)
-    list:SetPos(10, 48)
-    list:SetSize(panel:GetWide() - 20, panel:GetTall() - 58)
+    list:SetPos(10, 78)
+    list:SetSize(panel:GetWide() - 20, panel:GetTall() - 88)
     list:AddColumn("Item ID")
     list:AddColumn("Amount")
 
@@ -77,16 +96,87 @@ local function rebuildLocalItemsTab(panel)
         list:AddLine(row.id or "", tostring(row.amount or 1))
     end
 
-    list.OnRowRightClick = function(_, id, line)
+    list.OnRowRightClick = function(_, _, line)
+        local id = line:GetColumnText(1)
+        local isBase = false
+        for _, baseId in ipairs(baseLocalIds()) do
+            if baseId == id then
+                isBase = true
+                break
+            end
+        end
+
         local menu = DermaMenu()
-        menu:AddOption("Удалить", function()
-            sendAction("local_remove", { itemId = line:GetColumnText(1) })
-        end)
+        if isBase then
+            local opt = menu:AddOption("Удаление запрещено для базовых локальных", function() end)
+            opt:SetEnabled(false)
+        else
+            menu:AddOption("Удалить", function()
+                sendAction("local_remove", { itemId = id })
+            end)
+        end
         menu:Open()
     end
 
     panel.OnSizeChanged = function(self, w, h)
-        list:SetSize(w - 20, h - 58)
+        info:SetSize(w - 20, 22)
+        list:SetSize(w - 20, h - 88)
+    end
+end
+
+local function rebuildGiveTab(panel)
+    panel:Clear()
+
+    local selectedTargetSid64 = LocalPlayer():SteamID64()
+
+    local targetBox = vgui.Create("DComboBox", panel)
+    targetBox:SetPos(10, 10)
+    targetBox:SetSize(380, 28)
+    targetBox:SetValue("Цель: я")
+    targetBox:AddChoice("Я", LocalPlayer():SteamID64())
+
+    for _, p in ipairs(player.GetAll()) do
+        if IsValid(p) then
+            targetBox:AddChoice(p:Nick() .. " (" .. p:SteamID64() .. ")", p:SteamID64())
+        end
+    end
+
+    targetBox.OnSelect = function(_, _, _, data)
+        selectedTargetSid64 = tostring(data or LocalPlayer():SteamID64())
+    end
+
+    local itemBox = vgui.Create("DComboBox", panel)
+    itemBox:SetPos(10, 44)
+    itemBox:SetSize(300, 28)
+    itemBox:SetValue("Выберите предмет")
+    for _, itemId in ipairs(payload.itemIds or {}) do
+        itemBox:AddChoice(itemId)
+    end
+
+    local amount = vgui.Create("DTextEntry", panel)
+    amount:SetPos(316, 44)
+    amount:SetSize(80, 28)
+    amount:SetValue("1")
+
+    local giveBtn = makeButton(panel, "Выдать предмет", function()
+        local itemId = itemBox:GetValue()
+        if not itemId or itemId == "" or itemId == "Выберите предмет" then return end
+
+        local amt = math.max(1, math.floor(tonumber(amount:GetValue()) or 1))
+        RunConsoleCommand("nexus_inv_admin_give", tostring(selectedTargetSid64), tostring(itemId), tostring(amt))
+    end)
+    giveBtn:SetPos(402, 44)
+    giveBtn:SetSize(190, 28)
+
+    local hint = vgui.Create("DLabel", panel)
+    hint:SetPos(10, 80)
+    hint:SetSize(panel:GetWide() - 20, 22)
+    hint:SetText("Выдача не делает предмет локальным. Его можно удалить/выбросить по обычным правилам предмета.")
+    hint:SetFont("NexusInvAdminText")
+    hint:SetTextColor(Color(200, 212, 236))
+
+    panel.OnSizeChanged = function(self, w)
+        hint:SetSize(w - 20, 22)
     end
 end
 
@@ -103,8 +193,13 @@ local function rebuildVendorsTab(panel)
 
     local function refreshProfiles()
         profiles:Clear()
+        local rows = {}
         for id, prof in pairs(payload.vendorProfiles or {}) do
-            profiles:AddLine(id, prof.name or "Торговец")
+            rows[#rows + 1] = { id = id, name = (prof and prof.name) or "Торговец" }
+        end
+        table.sort(rows, function(a, b) return a.id < b.id end)
+        for _, row in ipairs(rows) do
+            profiles:AddLine(row.id, row.name)
         end
     end
 
@@ -245,13 +340,179 @@ local function rebuildVendorsTab(panel)
     refreshProfiles()
 end
 
+local function rebuildCustomItemsTab(panel)
+    panel:Clear()
+
+    local list = vgui.Create("DListView", panel)
+    list:SetPos(10, 10)
+    list:SetSize(420, panel:GetTall() - 20)
+    list:AddColumn("Item ID")
+    list:AddColumn("Название")
+    list:AddColumn("Stack")
+    list:AddColumn("Buy")
+    list:AddColumn("Sell")
+
+    local right = vgui.Create("DScrollPanel", panel)
+    right:SetPos(440, 10)
+    right:SetSize(panel:GetWide() - 450, panel:GetTall() - 20)
+
+    local y = 0
+    local function addLabel(text)
+        local lbl = vgui.Create("DLabel", right)
+        lbl:SetPos(0, y)
+        lbl:SetSize(320, 18)
+        lbl:SetText(text)
+        lbl:SetFont("NexusInvAdminText")
+        y = y + 20
+        return lbl
+    end
+
+    local function addEntry(defaultValue)
+        local e = vgui.Create("DTextEntry", right)
+        e:SetPos(0, y)
+        e:SetSize(360, 26)
+        e:SetValue(defaultValue or "")
+        y = y + 32
+        return e
+    end
+
+    local function addCheck(text, defaultValue)
+        local c = vgui.Create("DCheckBoxLabel", right)
+        c:SetPos(0, y)
+        c:SetText(text)
+        c:SetValue(defaultValue and 1 or 0)
+        c:SizeToContents()
+        y = y + 24
+        return c
+    end
+
+    addLabel("itemId (a-z0-9_)")
+    local itemId = addEntry("")
+
+    addLabel("Название")
+    local name = addEntry("")
+
+    addLabel("Модель")
+    local model = addEntry("models/props_junk/cardboard_box003a.mdl")
+
+    addLabel("Описание")
+    local description = addEntry("")
+
+    addLabel("maxStack")
+    local maxStack = addEntry("1")
+
+    addLabel("buyPrice")
+    local buyPrice = addEntry("0")
+
+    addLabel("sellPrice")
+    local sellPrice = addEntry("0")
+
+    local canDrop = addCheck("Можно выбрасывать", true)
+    local canSell = addCheck("Можно продавать", true)
+
+    addLabel("useType (например: heal)")
+    local useType = addEntry("")
+
+    addLabel("healAmount")
+    local healAmount = addEntry("0")
+
+    local function fillForm(id, item)
+        itemId:SetValue(id or "")
+        name:SetValue(item.name or "")
+        model:SetValue(item.model or "")
+        description:SetValue(item.description or "")
+        maxStack:SetValue(tostring(item.maxStack or 1))
+        buyPrice:SetValue(tostring(item.buyPrice or 0))
+        sellPrice:SetValue(tostring(item.sellPrice or 0))
+        canDrop:SetChecked(item.canDrop ~= false)
+        canSell:SetChecked(item.canSell ~= false)
+        useType:SetValue(item.useType or "")
+        healAmount:SetValue(tostring(item.healAmount or 0))
+    end
+
+    local saveBtn = makeButton(right, "Сохранить предмет", function()
+        local id = string.Trim(itemId:GetValue() or "")
+        if id == "" then return end
+
+        sendAction("item_upsert", {
+            itemId = id,
+            item = {
+                name = string.Trim(name:GetValue() or ""),
+                model = string.Trim(model:GetValue() or ""),
+                description = string.Trim(description:GetValue() or ""),
+                maxStack = tonumber(maxStack:GetValue()) or 1,
+                buyPrice = tonumber(buyPrice:GetValue()) or 0,
+                sellPrice = tonumber(sellPrice:GetValue()) or 0,
+                canDrop = canDrop:GetChecked(),
+                canSell = canSell:GetChecked(),
+                useType = string.Trim(useType:GetValue() or ""),
+                healAmount = tonumber(healAmount:GetValue()) or 0
+            }
+        })
+    end)
+    saveBtn:SetPos(0, y)
+    saveBtn:SetSize(360, 28)
+    y = y + 36
+
+    local removeBtn = makeButton(right, "Удалить предмет", function()
+        local id = string.Trim(itemId:GetValue() or "")
+        if id == "" then return end
+        sendAction("item_remove", { itemId = id })
+    end)
+    removeBtn:SetPos(0, y)
+    removeBtn:SetSize(360, 28)
+
+    local rows = {}
+    for id, item in pairs(payload.customItems or {}) do
+        rows[#rows + 1] = {
+            id = id,
+            name = item.name or "",
+            stack = tostring(item.maxStack or 1),
+            buy = tostring(item.buyPrice or 0),
+            sell = tostring(item.sellPrice or 0)
+        }
+    end
+    table.sort(rows, function(a, b) return a.id < b.id end)
+
+    for _, row in ipairs(rows) do
+        list:AddLine(row.id, row.name, row.stack, row.buy, row.sell)
+    end
+
+    list.OnRowSelected = function(_, _, line)
+        local id = line:GetColumnText(1)
+        local item = payload.customItems and payload.customItems[id]
+        if not item then return end
+        fillForm(id, item)
+    end
+
+    list.OnRowRightClick = function(_, _, line)
+        local id = line:GetColumnText(1)
+        local menu = DermaMenu()
+        menu:AddOption("Загрузить в форму", function()
+            local item = payload.customItems and payload.customItems[id]
+            if not item then return end
+            fillForm(id, item)
+        end)
+        menu:AddOption("Удалить", function()
+            sendAction("item_remove", { itemId = id })
+        end)
+        menu:Open()
+    end
+
+    panel.OnSizeChanged = function(self, w, h)
+        list:SetSize(420, h - 20)
+        right:SetPos(440, 10)
+        right:SetSize(w - 450, h - 20)
+    end
+end
+
 local function openAdminUI()
     if IsValid(adminFrame) then
         adminFrame:Remove()
     end
 
     adminFrame = vgui.Create("DFrame")
-    adminFrame:SetSize(980, 640)
+    adminFrame:SetSize(1120, 680)
     adminFrame:Center()
     adminFrame:SetTitle("")
     adminFrame:ShowCloseButton(false)
@@ -277,13 +538,25 @@ local function openAdminUI()
     localItemsTab:Dock(FILL)
     localItemsTab.Paint = nil
     rebuildLocalItemsTab(localItemsTab)
-    tabs:AddSheet("Локальные предметы", localItemsTab)
+    tabs:AddSheet("Локальные (база)", localItemsTab)
+
+    local giveTab = vgui.Create("DPanel", tabs)
+    giveTab:Dock(FILL)
+    giveTab.Paint = nil
+    rebuildGiveTab(giveTab)
+    tabs:AddSheet("Выдача предметов", giveTab)
 
     local vendorsTab = vgui.Create("DPanel", tabs)
     vendorsTab:Dock(FILL)
     vendorsTab.Paint = nil
     rebuildVendorsTab(vendorsTab)
     tabs:AddSheet("Торговцы", vendorsTab)
+
+    local customItemsTab = vgui.Create("DPanel", tabs)
+    customItemsTab:Dock(FILL)
+    customItemsTab.Paint = nil
+    rebuildCustomItemsTab(customItemsTab)
+    tabs:AddSheet("Кастомные предметы", customItemsTab)
 end
 
 net.Receive("nexus_inv_admin_open", function()
@@ -292,6 +565,12 @@ end)
 
 net.Receive("nexus_inv_admin_sync", function()
     payload = util.JSONToTable(net.ReadString() or "") or payload
+    payload.localItems = payload.localItems or {}
+    payload.vendorProfiles = payload.vendorProfiles or {}
+    payload.customItems = payload.customItems or {}
+    payload.itemIds = payload.itemIds or {}
+
+    _G.NEXUS_INV_RUNTIME_CUSTOM_ITEMS = payload.customItems
 
     if IsValid(adminFrame) then
         openAdminUI()
